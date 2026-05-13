@@ -1,0 +1,376 @@
+---
+title: "To examine the short-term impact of RBI monetary policy changes on sectoral stock returns."
+
+format: pdf
+editor: visual
+---
+
+## Loading Data
+
+```{r}
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+
+data_old <- list.files(path = "E:\\Project",pattern = "*.xlsx",full.names = TRUE)
+data <- lapply(data_old,read_xlsx)
+names(data) <- gsub(".xlsx", "", basename(data_old))
+data
+#All the datasets have been imported with their origial names in the vector "data"
+```
+
+## Calculating returns for each sector
+
+```{r}
+data <- lapply(data,function(df){
+  df %>% arrange(Date)
+})
+names(data)[names(data)==("NIFTY IT")] <- 'NIFTY_IT'
+
+repo_clean$Date <- as.Date(repo_clean$Date)
+
+data$`NIFTY_IT` <- data$`NIFTY_IT` %>% 
+  arrange(Date) %>% 
+  mutate(Return=log(Close/lag(Close)))
+
+
+data$NIFTY_AUTO <- data$NIFTY_AUTO %>% 
+  arrange(Date) %>% 
+  mutate(Return=log(Close/lag(Close)))
+
+data$NIFTY_BANK <- data$NIFTY_BANK %>% 
+  arrange(Date) %>% 
+  mutate(Return=log(Close/lag(Close)))
+
+data$NIFTY_FMCG <- data$NIFTY_FMCG %>% 
+  arrange(Date) %>% 
+  mutate(Return=log(Close/lag(Close)))
+
+data$NIFTY_pharma <- data$NIFTY_pharma %>% 
+  arrange(Date) %>% 
+  mutate(Return=log(Close/lag(Close)))
+
+data$NIFTY_REALTY <- data$NIFTY_REALTY %>% 
+  arrange(Date) %>% 
+  mutate(Return=log(Close/lag(Close)))
+
+data$NIFTY50 <- data$NIFTY50 %>% 
+  arrange(Date) %>% 
+  mutate(Return=log(Close/lag(Close)))
+
+```
+
+## Combining datasets
+
+```{r}
+market_data <- data$NIFTY50 %>%
+  select(Date, Market_Return = Return)
+
+bank <- data$NIFTY_BANK
+bank <- bank %>%
+  left_join(market_data, by = "Date")
+bank <- bank %>% filter(!is.na(Market_Return))
+
+```
+
+## Finding alpha and beta coefficients
+
+```{r}
+model_bank <- lm(Return ~ Market_Return, data = bank)
+alpha <- coef(model_bank)[1]
+beta <- coef(model_bank)[2]
+summary(model_bank)
+```
+
+## Merging Repo Dates
+
+```{r}
+event_dates <- data$repo_clean$Date
+head(event_dates)
+
+get_event_window <- function(data, event_dates, window = 3) {
+  index <- which(data$Date == event_dates)
+  if (length(index) == 0) return(NULL)
+  start <- index - window
+  end   <- index + window
+  if (start < 1 | end > nrow(data)) return(NULL)
+  out <- data[start:end, ]
+  out$Event_Time <- -window:window
+  return(out)
+}
+event_windows <- lapply(event_dates, function(d) {
+  get_event_window(bank, d, window = 3)
+})
+
+
+get_event_window <- function(df, event_dates, event_id, window = 3) {
+  idx <- which(df$Date == event_dates)
+  if (length(idx) == 0) return(NULL)
+  start <- idx - window
+  end   <- idx + window
+  if (start < 1 | end > nrow(df)) return(NULL)
+  out <- df[start:end, ]
+  out$Event_Time <- -window:window
+  out$Event_ID   <- event_id
+  out$Event_Date <- event_dates
+  return(out)
+}
+
+event_windows <- lapply(seq_along(event_dates), function(i) {
+  get_event_window(bank, event_dates[i], event_id = i, window = 3)
+})
+
+event_windows <- event_windows[!sapply(event_windows, is.null)]
+event_data    <- bind_rows(event_windows)
+
+nrow(event_data)
+table(event_data$Event_Time)
+
+event_data <- event_data %>%
+  left_join(data$repo_clean %>% select(Date, Change),
+            by = c("Event_Date" = "Date"))
+
+```
+
+## Abnormal Returns
+
+```{r}
+alpha_bank <- coef(model_bank)[1]
+beta_bank <- coef(model_bank)[2]
+
+event_data <- event_data %>%
+  mutate(Expected_Return = alpha_bank + beta_bank * Market_Return,
+    AR = Return - Expected_Return
+  )
+variable.names(event_data)
+
+```
+
+## CAR per event
+
+```{r}
+CAR_data <- event_data %>% 
+  group_by(Event_ID,Event_Date,Change) %>% 
+  summarise(CAR=sum(AR),.groups = "drop")
+
+nrow(CAR_data)
+head(CAR_data)
+
+```
+
+## CAR in hikes and cuts
+
+```{r}
+CAR_data <- CAR_data %>%
+  mutate(Direction = ifelse(Change > 0, "Hike", "Cut"))
+
+CAR_data %>%
+  group_by(Direction) %>%
+  summarise(
+    Mean_CAR = mean(CAR),
+    N = n()
+  )
+
+```
+
+## t-tests
+
+```{r}
+# Overall
+t.test(CAR_data$CAR, mu = 0)
+
+# Hikes only
+t.test(CAR_data$CAR[CAR_data$Direction == "Hike"], mu = 0)
+
+# Cuts only
+t.test(CAR_data$CAR[CAR_data$Direction == "Cut"], mu = 0)
+```
+
+## at the event day
+
+```{r}
+event_data %>%
+  filter(Event_Time == 0) %>%
+  summarise(Mean_AR = mean(AR),
+            t_stat = mean(AR)/(sd(AR)/sqrt(n())),
+            p_value = 2*pt(-abs(mean(AR)/(sd(AR)/sqrt(n()))), df=n()-1))
+```
+
+## For all sectors
+
+```{r}
+# Keep only essential columns inside run_event_study
+# Add this as the FIRST line after creating sector object
+
+run_event_study <- function(sector_name, data, market_data, 
+                             repo_clean, event_dates, window = 3) {
+  
+  # Step 1: Align sector with market - keep only needed columns
+  sector <- data[[sector_name]] %>%
+    select(Date, Close, Return) %>%
+    left_join(market_data, by = "Date") %>%
+    filter(!is.na(Market_Return))
+  
+  # Step 2: Estimation window
+  event_dates_all <- unlist(lapply(event_dates, function(d) {
+    idx <- which(sector$Date == d)
+    if (length(idx) == 0) return(NULL)
+    start <- max(1, idx - window)
+    end   <- min(nrow(sector), idx + window)
+    as.character(sector$Date[start:end])
+  }))
+  
+  estimation <- sector %>%
+    filter(!Date %in% as.Date(event_dates_all))
+  
+  # Step 3: Market model
+  model <- lm(Return ~ Market_Return, data = estimation)
+  alpha <- coef(model)[1]
+  beta  <- coef(model)[2]
+  
+  # Step 4: Event windows
+  get_window <- function(df, event_date, event_id, window) {
+    idx <- which(df$Date == event_date)
+    if (length(idx) == 0) return(NULL)
+    start <- idx - window
+    end   <- idx + window
+    if (start < 1 | end > nrow(df)) return(NULL)
+    out <- df[start:end, ]
+    out$Event_Time <- -window:window
+    out$Event_ID   <- event_id
+    out$Event_Date <- as.Date(event_date)
+    return(out)
+  }
+  
+  windows <- lapply(seq_along(event_dates), function(i) {
+    get_window(sector, event_dates[i], i, window)
+  })
+  windows <- windows[!sapply(windows, is.null)]
+  event_data <- bind_rows(windows)
+  
+  # Step 5: AR and CAR
+  repo_join <- repo_clean %>%
+    mutate(Date = as.Date(Date)) %>%
+    select(Date, Change)
+  
+  event_data <- event_data %>%
+    mutate(Event_Date = as.Date(Event_Date)) %>%
+    left_join(repo_join, by = c("Event_Date" = "Date")) %>%
+    mutate(
+      Expected_Return = alpha + beta * Market_Return,
+      AR = Return - Expected_Return,
+      Direction = ifelse(Change > 0, "Hike", "Cut"),
+      Sector = sector_name
+    )
+  
+  CAR_data <- event_data %>%
+    group_by(Event_ID, Event_Date, Change, Direction) %>%
+    summarise(CAR = sum(AR), .groups = "drop") %>%
+    mutate(Sector = sector_name)
+  
+  # Step 6: t-tests
+  overall <- t.test(CAR_data$CAR, mu = 0)
+  hike    <- t.test(CAR_data$CAR[CAR_data$Direction == "Hike"], mu = 0)
+  cut     <- t.test(CAR_data$CAR[CAR_data$Direction == "Cut"],  mu = 0)
+  
+  day0_ar <- event_data %>% filter(Event_Time == 0)
+  day0    <- t.test(day0_ar$AR, mu = 0)
+  
+  list(
+    sector        = sector_name,
+    alpha         = alpha,
+    beta          = beta,
+    CAR_data      = CAR_data,
+    event_data    = event_data,
+    t_overall     = overall$p.value,
+    t_hike        = hike$p.value,
+    t_cut         = cut$p.value,
+    t_day0        = day0$p.value,
+    mean_CAR_hike = mean(CAR_data$CAR[CAR_data$Direction == "Hike"]),
+    mean_CAR_cut  = mean(CAR_data$CAR[CAR_data$Direction == "Cut"])
+  )
+}
+
+# Step 1: Run event study for all sectors
+sectors <- c("NIFTY_BANK", "NIFTY_IT", "NIFTY_AUTO", 
+             "NIFTY_FMCG", "NIFTY_pharma", "NIFTY_REALTY")
+
+
+names(results) <- sectors
+
+# Step 2: Summary table
+summary_table <- do.call(rbind, lapply(results, function(r) {
+  data.frame(
+    Sector        = r$sector,
+    Alpha         = round(r$alpha, 6),
+    Beta          = round(r$beta, 4),
+    Mean_CAR_Hike = round(r$mean_CAR_hike, 5),
+    Mean_CAR_Cut  = round(r$mean_CAR_cut, 5),
+    p_Overall     = round(r$t_overall, 4),
+    p_Hike        = round(r$t_hike, 4),
+    p_Cut         = round(r$t_cut, 4),
+    p_Day0        = round(r$t_day0, 4)
+  )
+}))
+
+print(summary_table)
+```
+
+## Plots
+
+```{r}
+all_event_data <- all_event_data %>%
+  mutate(Sector = recode(Sector,
+    "NIFTY_BANK"   = "Banking",
+    "NIFTY_IT"     = "IT",
+    "NIFTY_AUTO"   = "Auto",
+    "NIFTY_FMCG"   = "FMCG",
+    "NIFTY_pharma" = "Pharma",
+    "NIFTY_REALTY" = "Realty"
+  ))
+
+all_CAR_data <- all_CAR_data %>%
+  mutate(Sector = recode(Sector,
+    "NIFTY_BANK"   = "Banking",
+    "NIFTY_IT"     = "IT",
+    "NIFTY_AUTO"   = "Auto",
+    "NIFTY_FMCG"   = "FMCG",
+    "NIFTY_pharma" = "Pharma",
+    "NIFTY_REALTY" = "Realty"
+  ))
+ar_plot_data <- all_event_data %>%
+  group_by(Sector, Event_Time) %>%
+  summarise(Mean_AR = mean(AR), .groups = "drop")
+
+ggplot(ar_plot_data, aes(x = Event_Time, y = Mean_AR, color = Sector)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  facet_wrap(~Sector, scales = "free_y") +
+  labs(title = "Average Abnormal Returns Around RBI Policy Events",
+       x = "Event Time (Days Relative to Announcement)",
+       y = "Mean Abnormal Return") +
+  theme_minimal() +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5, face = "bold")) +
+  scale_x_continuous(breaks = -3:3)
+```
+
+```{r}
+car_summary <- all_CAR_data %>%
+  group_by(Sector, Direction) %>%
+  summarise(Mean_CAR = mean(CAR), .groups = "drop")
+
+ggplot(car_summary, aes(x = Sector, y = Mean_CAR, fill = Direction)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.6) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  scale_fill_manual(values = c("Hike" = "#e74c3c", "Cut" = "#2ecc71")) +
+  labs(title = "Mean CAR by Sector and Policy Direction",
+       x = "Sector",
+       y = "Mean Cumulative Abnormal Return",
+       fill = "Policy Direction") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        axis.text.x = element_text(size = 11))
+```

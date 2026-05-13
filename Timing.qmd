@@ -1,0 +1,51 @@
+---
+title: "Timing of the reaaction or impact"
+format: pdf
+editor: visual
+---
+
+```{r}
+library(tidyr)
+```
+
+
+## Adding Lag to Panel Data
+```{r}
+timing_analysis <- all_event_data %>%
+  group_by(Event_Time) %>%
+  summarise(
+    Mean_AR = mean(AR),
+    SD_AR = sd(AR),
+    N = n(),
+    t_stat = mean(AR) / (sd(AR) / sqrt(n())),
+    p_value = round(2 * pt(-abs(t_stat), df = n() - 1), 4)
+  )
+
+print(timing_analysis)
+
+timing_by_sector <- all_event_data %>%
+  group_by(Sector, Event_Time) %>%
+  summarise(
+    Mean_AR = mean(AR),
+    t_stat = mean(AR) / (sd(AR) / sqrt(n())),
+    p_value = round(2 * pt(-abs(t_stat), df = n() - 1), 4),
+    .groups = "drop"
+  )
+
+
+print(timing_by_sector)
+
+timing_by_sector %>%
+  filter(Sector == "NIFTY_REALTY") %>%
+  print()
+
+# Find significant event times per sector
+significant_timing <- timing_by_sector %>%
+  filter(p_value < 0.05) %>%
+  select(Sector, Event_Time, Mean_AR, p_value) %>%
+  arrange(Sector, Event_Time)
+
+print(significant_timing)
+```
+
+

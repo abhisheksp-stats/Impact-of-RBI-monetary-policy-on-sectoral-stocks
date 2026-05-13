@@ -1,0 +1,146 @@
+---
+title: "Sensitivity of sectoral stock returns to RBI monetary policy changes"
+format: pdf
+editor: visual
+---
+
+## Packages
+
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(plm)
+library(lubridate)
+```
+
+## Creating a sector combined dataset 
+
+```{r}
+data$NIFTY_BANK$Sector <- "BANK"
+data$NIFTY_IT$Sector <- "IT"
+data$NIFTY_AUTO$Sector <- "AUTO"
+data$NIFTY_FMCG$Sector <- "FMCG"
+data$NIFTY_pharma$Sector <- "PHARMA"
+data$NIFTY_REALTY$Sector <- "REALTY"
+
+sector_names <- setdiff(names(data), c("NIFTY50", "CPI", "repo_clean"))
+
+panel_list <- lapply(sector_names,function(name){
+  df=data[[name]] %>% 
+    select("Date","Return") %>% 
+    mutate(Sector=name)
+  return(df)
+})
+
+# Reload NIFTY_IT fresh
+library(readxl)
+
+# Replace with your actual file path
+data$NIFTY_IT <- read_excel("E:/Project/NIFTY IT.xlsx")
+
+# Fix date
+data$NIFTY_IT$Date <- as.Date(data$NIFTY_IT$Date)
+
+# Fix numeric columns
+data$NIFTY_IT <- data$NIFTY_IT %>%
+  mutate(across(c(Open, High, Low, Close), 
+                ~as.numeric(as.character(.))))
+
+# Calculate return cleanly
+data$NIFTY_IT <- data$NIFTY_IT %>%
+  arrange(Date) %>%
+  mutate(Return = log(Close / lag(Close))) %>%
+  filter(!is.na(Return))
+
+# Verify
+class(data$NIFTY_IT)
+range(data$NIFTY_IT$Return, na.rm = TRUE)
+head(data$NIFTY_IT)
+
+panel_data <- bind_rows(panel_list)
+View(panel_data)
+
+panel_data$Sector <- gsub("NIFTY_","",panel_data$Sector)
+
+Market <- data$NIFTY50 %>% 
+  select("Date",Market_Return="Return") 
+  
+head(panel_data)
+unique(panel_data$Sector)
+
+panel_data <- left_join(panel_data, market, by = "Date")
+
+```
+
+## Mergining Repo Change
+
+```{r}
+panel_data <- left_join(panel_data,repo_clean[,c("Date","Change")],by="Date")
+
+panel_data <- panel_data$Change %>%
+  replace(panel_data$Change,NA,0)
+  
+panel_data$Change[is.na(panel_data$Change)] <- 0
+
+```
+
+## Panel data and Regression
+
+```{r}
+pdata <- pdata.frame(panel_data,index=c("Sector","Date"))
+
+model_fe <- plm(Return~Change,data = pdata,model = "within")
+summary(model_fe)
+
+model <- plm(Return~Change+Market_Return,data = pdata,model="within")
+summary(model)
+
+model1 <- plm(Return~Change*Sector+Market_Return,data = pdata,model="within")
+summary(model1)
+```
+
+```{r}
+# Calculate total sensitivity per sector
+comparison_table <- data.frame(
+  Sector = c("AUTO", "BANK", "FMCG", "IT", "PHARMA", "REALTY"),
+  Beta_Repo = c(
+    0.00032082,
+    0.00032082 - 0.00155118,
+    0.00032082 - 0.00030457,
+    0.00032082 - 0.00054223,
+    0.00032082 - 0.00149904,
+    0.00032082 - 0.00772438
+  )
+) %>%
+  mutate(
+    Abs_Sensitivity = abs(Beta_Repo),
+    Direction = ifelse(Beta_Repo > 0, "Positive", "Negative")
+  ) %>%
+  arrange(desc(Abs_Sensitivity))
+
+print(comparison_table)
+```
+
+## Plot
+
+```{r}
+comparison_table %>%
+  mutate(Sector = reorder(Sector, Beta_Repo)) %>%
+  ggplot(aes(x = Sector, y = Beta_Repo, fill = Direction)) +
+  geom_bar(stat = "identity", width = 0.6) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  scale_fill_manual(values = c("Positive" = "#2ecc71", 
+                                "Negative" = "#e74c3c")) +
+  labs(title = "Sectoral Sensitivity to RBI Repo Rate Changes",
+       subtitle = "Based on Daily Panel Regression with Fixed Effects (2011-2026)",
+       x = "Sector",
+       y = "Repo Rate Sensitivity (Beta)") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5))
+
+
+```
+
+
