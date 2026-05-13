@@ -43,7 +43,7 @@ By applying statistical methods, this study aims to understand the **transmissio
 ### Statistical Methods Used
 - **Augmented Dickey-Fuller (ADF) Test** — to check stationarity of return series
 - **Ordinary Least Squares (OLS) Regression** — to estimate the impact of policy rate on returns
-- **Pearson Correlation Analysis** — to identify sector-wise relationships
+- **Panel Regression** - Used the time events in regression
 - **Event Study Methodology** — to analyze abnormal returns around policy announcement dates
 - **Descriptive Statistics** — mean, variance, skewness, kurtosis of returns
 
